@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -33,8 +32,12 @@ func logWarn(format string, v ...interface{}) {
 	log.Printf("[WARN] "+format, v...)
 }
 
+var errorLog *log.Logger
+
 func logError(format string, v ...interface{}) {
-	log.Printf("[ERROR] "+format, v...)
+	msg := fmt.Sprintf("[ERROR] "+format, v...)
+	fmt.Println(msg)
+	errorLog.Println(msg)
 }
 
 // Initialize the S3 client with provided credentials, region and custom endpoint.
@@ -87,14 +90,15 @@ func main() {
 	fmt.Print("Enter Region: ")
 	fmt.Scanln(&region)
 
-	// Setup logging: create log file and write both to console and file
+	// Setup logging: create log file and write error logs only to file
 	logFile, err := os.Create("output.log")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening log file: %v\n", err)
 		os.Exit(1)
 	}
 	defer logFile.Close()
-	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+
+	errorLog = log.New(logFile, "", log.LstdFlags)
 
 	// Create JSON log file with error handling for opening
 	jsonLogFile, err := os.Create("log_json.json")
