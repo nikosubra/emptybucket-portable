@@ -186,13 +186,15 @@ func main() {
 			log.Fatalf("Error counting objects: %v\n", err)
 		}
 		for _, v := range page.Versions {
-			if processed[v.Key] != nil && processed[v.Key][aws.ToString(v.VersionId)] {
+			key := aws.ToString(v.Key)
+			if processed[key] != nil && processed[key][aws.ToString(v.VersionId)] {
 				continue
 			}
 			totalObjects++
 		}
 		for _, dm := range page.DeleteMarkers {
-			if processed[dm.Key] != nil && processed[dm.Key][aws.ToString(dm.VersionId)] {
+			key := aws.ToString(dm.Key)
+			if processed[key] != nil && processed[key][aws.ToString(dm.VersionId)] {
 				continue
 			}
 			totalObjects++
@@ -315,7 +317,8 @@ func main() {
 		}
 		logInfo("S3 page read completed: %d versions and %d delete markers", len(page.Versions), len(page.DeleteMarkers))
 		for _, v := range page.Versions {
-			if processed[v.Key] != nil && processed[v.Key][aws.ToString(v.VersionId)] {
+			key := aws.ToString(v.Key)
+			if processed[key] != nil && processed[key][aws.ToString(v.VersionId)] {
 				continue
 			}
 			currentBatch = append(currentBatch, types.ObjectIdentifier{
@@ -328,7 +331,8 @@ func main() {
 			}
 		}
 		for _, dm := range page.DeleteMarkers {
-			if processed[dm.Key] != nil && processed[dm.Key][aws.ToString(dm.VersionId)] {
+			key := aws.ToString(dm.Key)
+			if processed[key] != nil && processed[key][aws.ToString(dm.VersionId)] {
 				continue
 			}
 			currentBatch = append(currentBatch, types.ObjectIdentifier{
