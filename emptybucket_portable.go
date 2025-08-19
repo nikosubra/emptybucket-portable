@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -69,6 +70,22 @@ func initS3Client(accessKey, secretKey, region, endpoint string) (*s3.Client, er
 }
 
 func main() {
+
+	timeoutHours := flag.Int("timeout", 36, "Global timeout for execution in hours")
+	workers := flag.Int("workers", 4, "Number of concurrent deletion workers")
+	batch := flag.Int("batch-size", 200, "Number of objects to delete per batch")
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutHours)*time.Hour)
+	defer cancel()
+
+	// Handle interrupt signals to gracefully shut down
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt)
+	go func() {
+		<-sigs
+		logWarn("Interrupt signal received. Cancelling context...")
+		cancel()
+	}()
 
 	resetState := flag.Bool("reset-state", false, "Ignore and delete existing state.json")
 	flag.Parse()
@@ -149,7 +166,7 @@ func main() {
 	}
 
 	// Check accessibility of the specified bucket via HeadBucket
-	_, err = client.HeadBucket(context.Background(), &s3.HeadBucketInput{
+	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -178,8 +195,8 @@ func main() {
 		Bucket: aws.String(bucket),
 	})
 	for countPaginator.HasMorePages() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		page, err := countPaginator.NextPage(ctx)
+		ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
+		page, err := countPaginator.NextPage(ctxPage)
 		cancel()
 		if err != nil {
 			logError("Error counting objects: %v\n", err)
@@ -213,8 +230,8 @@ func main() {
 	)
 
 	// Settings for batch deletion with concurrency limited by semaphore
-	const batchSize = 200
-	numWorkers := 4
+	batchSize := *batch
+	numWorkers := *workers
 	sem := semaphore.NewWeighted(int64(numWorkers))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -225,9 +242,14 @@ func main() {
 	var batchCount int
 	var etaEstimate time.Duration
 
+	var consecutiveErrors int
+	const maxConsecutiveErrors = 5
+
 	paginator := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{
 		Bucket: aws.String(bucket),
 	})
+
+	batchChan := make(chan []types.ObjectIdentifier, 10)
 
 	// Function to process a batch of objects to delete concurrently
 	processBatch := func(batch []types.ObjectIdentifier) {
@@ -235,7 +257,7 @@ func main() {
 			return
 		}
 		wg.Add(1)
-		if err := sem.Acquire(context.Background(), 1); err != nil {
+		if err := sem.Acquire(ctx, 1); err != nil {
 			logWarn("Semaphore acquire failed: %v", err)
 			wg.Done()
 			return
@@ -256,8 +278,8 @@ func main() {
 			var resp *s3.DeleteObjectsOutput
 			// Retry attempts in case of deletion error
 			for i := 0; i < 3; i++ {
-				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				resp, err = client.DeleteObjects(ctx, input)
+				ctxDel, cancel := context.WithTimeout(ctx, 60*time.Second)
+				resp, err = client.DeleteObjects(ctxDel, input)
 				cancel()
 				if err == nil {
 					break
@@ -301,57 +323,92 @@ func main() {
 				etaEstimate = time.Duration(rate*float64(totalObjects-deletedCount)) * time.Millisecond
 			}
 			logInfo("Batch %d completed. Totals: deleted %d, errors %d, estimated ETA %s", batchCount, deletedCount, errorCount, etaEstimate.Truncate(time.Second))
+			logFile.Sync()
+
+			if err != nil || (resp != nil && len(resp.Errors) > 0) {
+				consecutiveErrors++
+			} else {
+				consecutiveErrors = 0
+			}
+
+			if consecutiveErrors >= maxConsecutiveErrors {
+				sleepDuration := time.Duration(consecutiveErrors) * time.Second
+				logWarn("High error rate detected. Throttling by sleeping %v...", sleepDuration)
+				mu.Unlock() // release lock before sleep
+				time.Sleep(sleepDuration)
+				mu.Lock()
+				consecutiveErrors = 0 // reset after throttling
+			}
+
 			mu.Unlock()
 		}(batch)
 	}
 
-	// Iterate over pages of objects/versions to create batches for deletion
-	var currentBatch []types.ObjectIdentifier
-	for paginator.HasMorePages() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		page, err := paginator.NextPage(ctx)
-		cancel()
-		if err != nil {
-			logError("Error listing objects: %v", err)
-			log.Fatalf("Error listing objects: %v", err)
+	// Producer goroutine to read pages and send batches to batchChan
+	go func() {
+		defer close(batchChan)
+		var currentBatch []types.ObjectIdentifier
+		for paginator.HasMorePages() {
+			ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
+			page, err := paginator.NextPage(ctxPage)
+			cancel()
+			if err != nil {
+				logError("Error listing objects: %v", err)
+				return
+			}
+			logInfo("S3 page read completed: %d versions and %d delete markers", len(page.Versions), len(page.DeleteMarkers))
+
+			for _, v := range page.Versions {
+				key := aws.ToString(v.Key)
+				ver := aws.ToString(v.VersionId)
+				if processed[key] != nil && processed[key][ver] {
+					continue
+				}
+				currentBatch = append(currentBatch, types.ObjectIdentifier{
+					Key:       v.Key,
+					VersionId: v.VersionId,
+				})
+				if len(currentBatch) >= batchSize {
+					batchChan <- currentBatch
+					currentBatch = nil
+				}
+			}
+			for _, dm := range page.DeleteMarkers {
+				key := aws.ToString(dm.Key)
+				ver := aws.ToString(dm.VersionId)
+				if processed[key] != nil && processed[key][ver] {
+					continue
+				}
+				currentBatch = append(currentBatch, types.ObjectIdentifier{
+					Key:       dm.Key,
+					VersionId: dm.VersionId,
+				})
+				if len(currentBatch) >= batchSize {
+					batchChan <- currentBatch
+					currentBatch = nil
+				}
+			}
 		}
-		logInfo("S3 page read completed: %d versions and %d delete markers", len(page.Versions), len(page.DeleteMarkers))
-		for _, v := range page.Versions {
-			key := aws.ToString(v.Key)
-			if processed[key] != nil && processed[key][aws.ToString(v.VersionId)] {
-				continue
-			}
-			currentBatch = append(currentBatch, types.ObjectIdentifier{
-				Key:       v.Key,
-				VersionId: v.VersionId,
-			})
-			if len(currentBatch) >= batchSize {
-				processBatch(currentBatch)
-				currentBatch = nil
-			}
+		if len(currentBatch) > 0 {
+			batchChan <- currentBatch
 		}
-		for _, dm := range page.DeleteMarkers {
-			key := aws.ToString(dm.Key)
-			if processed[key] != nil && processed[key][aws.ToString(dm.VersionId)] {
-				continue
+	}()
+
+	// Consumer worker pool to process batches from batchChan
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for batch := range batchChan {
+				processBatch(batch)
 			}
-			currentBatch = append(currentBatch, types.ObjectIdentifier{
-				Key:       dm.Key,
-				VersionId: dm.VersionId,
-			})
-			if len(currentBatch) >= batchSize {
-				processBatch(currentBatch)
-				currentBatch = nil
-			}
-		}
-	}
-	// Process any remaining objects in the current batch
-	if len(currentBatch) > 0 {
-		processBatch(currentBatch)
+		}()
 	}
 
 	// Wait for all deletion goroutines to complete
 	wg.Wait()
+
+	logInfo("All deletion workers completed.")
 
 	// Print final summary of deletion operations
 	fmt.Printf("\nDeleted: %d | Errors: %d\n", deletedCount, errorCount)
@@ -391,4 +448,8 @@ func main() {
 	// Print total time taken to complete the script
 	duration := time.Since(start)
 	fmt.Printf("Completed in: %v\n", duration)
+
+	logInfo("Final summary: Deleted %d objects, Encountered %d errors", deletedCount, errorCount)
+	logInfo("Total duration: %s", duration.Truncate(time.Second))
+	logInfo("Failed deletions written to failures.csv: %d", len(failedObjects))
 }
