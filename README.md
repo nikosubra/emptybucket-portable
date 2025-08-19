@@ -78,8 +78,11 @@ Example:
    - Adaptive throttling slows down on repeated failures
 
 5. **Progress Tracking**
-   - Displays a live progress bar and estimated completion time
+   - Displays a live progress bar with ETA during:
+     - Scanning phase (pre-counts total deletable objects)
+     - Deletion phase
    - Logs are flushed immediately for real-time visibility
+   - Shows visual summary at completion
 
 6. **State Saving**
    - Saves successfully deleted objects to `state.json`
@@ -100,6 +103,7 @@ Example:
 | `log_json.json`  | Bucket metadata (versioning, timestamp, etc.)|
 | `failures.csv`   | Unsuccessful deletions                      |
 | `state.json`     | List of previously processed objects        |
+| `metrics.json`   | Execution summary (duration, success/failure stats)     |
 
 ---
 
@@ -118,7 +122,7 @@ Example:
 - [x] Fully non-interactive mode (flags for credentials)
 - [ ] Prometheus or structured metrics export
 - [ ] Adaptive worker scaling
-- [ ] JSON metrics export (`metrics.json`)
+- [x] JSON metrics export (`metrics.json`)
 
 ---
 
