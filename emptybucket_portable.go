@@ -235,6 +235,9 @@ func main() {
 		progressbar.OptionSetWidth(30),
 	)
 
+	// Track scan start time
+	scanStart := time.Now()
+
 	for countPaginator.HasMorePages() {
 		ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
 		page, err := countPaginator.NextPage(ctxPage)
@@ -249,6 +252,9 @@ func main() {
 				continue
 			}
 			totalObjects++
+			if totalObjects%10000 == 0 {
+				logInfo("Scanning progress: %d objects", totalObjects)
+			}
 			_ = scanBar.Add(1)
 		}
 		for _, dm := range page.DeleteMarkers {
@@ -257,10 +263,15 @@ func main() {
 				continue
 			}
 			totalObjects++
+			if totalObjects%10000 == 0 {
+				logInfo("Scanning progress: %d objects", totalObjects)
+			}
 			_ = scanBar.Add(1)
 		}
 	}
+	scanDuration := time.Since(scanStart)
 	fmt.Printf("Total objects: %d\n", totalObjects)
+	fmt.Printf("⏱️  Scanning completed in: %s\n", scanDuration.Truncate(time.Second))
 
 	// Configure progress bar for deleting objects
 	delBar := progressbar.NewOptions(totalObjects,
@@ -336,6 +347,10 @@ func main() {
 				failedObjects = append(failedObjects, batch...)
 			} else {
 				deletedCount += len(resp.Deleted)
+				// Deletion progress reporting
+				if deletedCount%10000 == 0 {
+					logInfo("Deletion progress: %d objects deleted", deletedCount)
+				}
 				errorCount += len(resp.Errors)
 				for _, e := range resp.Errors {
 					failedObjects = append(failedObjects, types.ObjectIdentifier{
