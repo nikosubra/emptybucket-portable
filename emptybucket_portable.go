@@ -189,38 +189,7 @@ func main() {
 		})
 	}
 
-	// Add a pre-scan to count total deletable objects before scanning starts:
-	logInfo("Pre-scanning bucket to estimate total objects...")
-	estTotalObjects := 0
-	estPaginator := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{
-		Bucket: aws.String(bucket),
-	})
-	for estPaginator.HasMorePages() {
-		ctxEst, cancel := context.WithTimeout(ctx, 30*time.Second)
-		page, err := estPaginator.NextPage(ctxEst)
-		cancel()
-		if err != nil {
-			logError("Error during pre-scan: %v", err)
-			break
-		}
-		for _, v := range page.Versions {
-			key := aws.ToString(v.Key)
-			ver := aws.ToString(v.VersionId)
-			if processed[key] != nil && processed[key][ver] {
-				continue
-			}
-			estTotalObjects++
-		}
-		for _, dm := range page.DeleteMarkers {
-			key := aws.ToString(dm.Key)
-			ver := aws.ToString(dm.VersionId)
-			if processed[key] != nil && processed[key][ver] {
-				continue
-			}
-			estTotalObjects++
-		}
-	}
-	logInfo("Estimated total deletable objects: %d", estTotalObjects)
+	// Use an indeterminate progress bar for scanning (no pre-scan for estimated total).
 
 	// Scan and count total objects and versions in the bucket
 	var totalObjects int
@@ -228,7 +197,7 @@ func main() {
 		Bucket: aws.String(bucket),
 	})
 
-	scanBar := progressbar.NewOptions(estTotalObjects,
+	scanBar := progressbar.NewOptions(-1,
 		progressbar.OptionSetDescription("Scanning bucket"),
 		progressbar.OptionSetPredictTime(true),
 		progressbar.OptionClearOnFinish(),
