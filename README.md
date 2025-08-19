@@ -45,13 +45,16 @@ You'll be prompted to input:
 
 ## ⚡️ Available Flags
 
-| Flag            | Description                                              |
-|-----------------|----------------------------------------------------------|
-| `--reset-state` | Deletes `state.json` and starts a fresh execution        |
+| Flag              | Description                                              |
+|-------------------|----------------------------------------------------------|
+| `--reset-state`   | Deletes `state.json` and starts a fresh execution        |
+| `--timeout`       | Global timeout (in hours) for the execution              |
+| `--workers`       | Number of concurrent deletion workers                    |
+| `--batch-size`    | Number of objects per delete batch                       |
 
 Example:
 ```bash
-./emptybucket --reset-state
+./emptybucket --reset-state --timeout 3 --workers 8 --batch-size 500
 ```
 
 ---
@@ -59,7 +62,7 @@ Example:
 ## 🧠 How It Works
 
 1. **Initialization**
-   - Prompts for credentials and endpoint
+   - Prompts for credentials and endpoint (unless passed as flags)
    - Connects to the bucket with TLS verification disabled
 
 2. **State Loading**
@@ -69,11 +72,14 @@ Example:
    - Scans versions and delete markers, skipping previously processed ones
 
 4. **Batch Deletion**
-   - Deletes in batches of 200 objects with 4 concurrent workers
+   - Deletes in parallel using a producer–consumer model
+   - Number of workers and batch size are configurable
    - Retries deletions up to 3 times on error
+   - Adaptive throttling slows down on repeated failures
 
 5. **Progress Tracking**
    - Displays a live progress bar and estimated completion time
+   - Logs are flushed immediately for real-time visibility
 
 6. **State Saving**
    - Saves successfully deleted objects to `state.json`
@@ -109,8 +115,10 @@ Example:
 
 - [ ] `--dry-run` support
 - [ ] Prefix filtering (`--prefix`)
-- [ ] Fully non-interactive mode (flags for credentials)
+- [x] Fully non-interactive mode (flags for credentials)
 - [ ] Prometheus or structured metrics export
+- [ ] Adaptive worker scaling
+- [ ] JSON metrics export (`metrics.json`)
 
 ---
 
