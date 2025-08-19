@@ -70,6 +70,8 @@ Example:
 
 3. **Object Scanning**
    - Scans versions and delete markers, skipping previously processed ones
+   - Pre-scan determines estimated total to provide accurate progress bar
+   - Displays a real-time progress bar in a single terminal line
 
 4. **Batch Deletion**
    - Deletes in parallel using a producer–consumer model
@@ -79,8 +81,8 @@ Example:
 
 5. **Progress Tracking**
    - Displays a live progress bar with ETA during:
-     - Scanning phase (pre-counts total deletable objects)
-     - Deletion phase
+     - Scanning phase (with single-line visual update)
+     - Deletion phase (with single-line visual update)
    - Logs are flushed immediately for real-time visibility
    - Shows visual summary at completion
 

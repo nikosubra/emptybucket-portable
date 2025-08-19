@@ -233,6 +233,7 @@ func main() {
 		progressbar.OptionSetPredictTime(true),
 		progressbar.OptionClearOnFinish(),
 		progressbar.OptionSetWidth(30),
+		progressbar.OptionSetRenderBlankState(true),
 	)
 
 	// Track scan start time
@@ -252,9 +253,6 @@ func main() {
 				continue
 			}
 			totalObjects++
-			if totalObjects%10000 == 0 {
-				logInfo("Scanning progress: %d objects", totalObjects)
-			}
 			_ = scanBar.Add(1)
 		}
 		for _, dm := range page.DeleteMarkers {
@@ -263,9 +261,6 @@ func main() {
 				continue
 			}
 			totalObjects++
-			if totalObjects%10000 == 0 {
-				logInfo("Scanning progress: %d objects", totalObjects)
-			}
 			_ = scanBar.Add(1)
 		}
 	}
@@ -280,6 +275,7 @@ func main() {
 		progressbar.OptionSetPredictTime(true),
 		progressbar.OptionSetWidth(30),
 		progressbar.OptionClearOnFinish(),
+		progressbar.OptionSetRenderBlankState(true),
 	)
 
 	// Settings for batch deletion with concurrency limited by semaphore
@@ -347,10 +343,6 @@ func main() {
 				failedObjects = append(failedObjects, batch...)
 			} else {
 				deletedCount += len(resp.Deleted)
-				// Deletion progress reporting
-				if deletedCount%10000 == 0 {
-					logInfo("Deletion progress: %d objects deleted", deletedCount)
-				}
 				errorCount += len(resp.Errors)
 				for _, e := range resp.Errors {
 					failedObjects = append(failedObjects, types.ObjectIdentifier{
