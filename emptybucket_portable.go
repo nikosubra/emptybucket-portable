@@ -144,6 +144,7 @@ func main() {
 	verCfg, err := client.GetBucketVersioning(context.TODO(), &s3.GetBucketVersioningInput{
 		Bucket: aws.String(bucket),
 	})
+	versioningEnabled := verCfg.Status == "Enabled"
 	if err == nil {
 		json.NewEncoder(jsonLogFile).Encode(map[string]interface{}{
 			"time":             time.Now().Format(time.RFC3339),
@@ -165,7 +166,7 @@ func main() {
 	var failedObjects []types.ObjectIdentifier
 
 	batchChan := make(chan []types.ObjectIdentifier, 10)
-	lister.StartProducer(ctx, client, bucket, processed, batchSize, batchChan, logger.Info, logger.Error)
+	lister.StartProducer(ctx, client, bucket, processed, batchSize, batchChan, logger.Info, logger.Error, versioningEnabled)
 
 	// Use deleter package to start worker pool and process batches
 	delResult := deleter.StartWorkerPool(ctx, deleter.DeleterConfig{
@@ -216,7 +217,7 @@ func main() {
 	logger.Info("Total duration: %s", duration.Truncate(time.Second))
 	logger.Info("Failed deletions written to failures.csv: %d", len(failedObjects))
 
-	fmt.Println("\n✔️  Cleanup completed successfully.")
+	fmt.Println("\nℹ️  No objects found for deletion in the bucket.")
 	fmt.Printf("⏱️  Total duration: %s\n", duration.Truncate(time.Second))
 	fmt.Printf("✅ Deleted: %d\n", deletedCount)
 	fmt.Printf("❌ Errors: %d\n", errorCount)

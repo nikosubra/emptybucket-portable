@@ -14,7 +14,7 @@ Go-based tool for safe and efficient mass deletion of versioned objects and dele
 ## 🛠 Requirements
 
 - Go ≥ 1.20
-- Access to an S3 bucket with versioning enabled
+- Access to an S3-compatible bucket (versioned or unversioned)
 - Delete permissions on objects and delete markers
 
 ---
@@ -72,8 +72,11 @@ Example:
    - Loads `state.json` (if exists) to skip previously deleted objects
 
 3. **Producer**
-   - Streams S3 object versions and delete markers directly into batches
-   - Skips previously processed versions via `state.json`
+   - If versioning is enabled:
+     - Streams object versions and delete markers into batches
+   - If versioning is disabled:
+     - Uses `ListObjectsV2` to collect all objects
+   - Skips already-processed entries via `state.json`
 
 4. **Batch Deletion**
    - Deletes in parallel using a producer–consumer model
@@ -112,7 +115,7 @@ Example:
 ## 🧪 Tested With
 
 - ✅ NetApp ONTAP S3 9.15
-- ✅ Versioned bucket
+- ✅ Versioned and unversioned buckets
 - ✅ Local network S3 access (self-signed TLS)
 
 ---

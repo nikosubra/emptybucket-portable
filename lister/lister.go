@@ -20,6 +20,7 @@ func StartProducer(
 	batchChan chan<- []types.ObjectIdentifier,
 	logInfo func(string, ...interface{}),
 	logError func(string, ...interface{}),
+	versioningEnabled bool,
 ) {
 	go func() {
 		defer close(batchChan)
