@@ -16,7 +16,6 @@ func StartProducer(
 	ctx context.Context,
 	client *s3.Client,
 	bucket string,
-	processed map[string]map[string]bool,
 	batchSize int,
 	batchChan chan<- []types.ObjectIdentifier,
 	logInfo func(string, ...interface{}),
@@ -49,10 +48,6 @@ func StartProducer(
 				key := aws.ToString(v.Key)
 				ver := aws.ToString(v.VersionId)
 				logger.Debug("Checking object: %s", key)
-				if processed[key] != nil && processed[key][ver] {
-					logger.Debug("Already processed: %s", key)
-					continue
-				}
 				logInfo("Queueing object: %s version: %s", key, ver)
 				currentBatch = append(currentBatch, types.ObjectIdentifier{
 					Key: v.Key, VersionId: v.VersionId,
@@ -68,10 +63,6 @@ func StartProducer(
 				key := aws.ToString(dm.Key)
 				ver := aws.ToString(dm.VersionId)
 				logger.Debug("Checking object: %s", key)
-				if processed[key] != nil && processed[key][ver] {
-					logger.Debug("Already processed: %s", key)
-					continue
-				}
 				logInfo("Queueing object: %s version: %s", key, ver)
 				currentBatch = append(currentBatch, types.ObjectIdentifier{
 					Key: dm.Key, VersionId: dm.VersionId,

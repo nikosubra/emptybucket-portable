@@ -25,7 +25,6 @@ import (
 	"github.com/nikosubra/emptybucket-portable/deleter"
 	"github.com/nikosubra/emptybucket-portable/lister"
 	"github.com/nikosubra/emptybucket-portable/logger"
-	"github.com/nikosubra/emptybucket-portable/state"
 )
 
 // Initialize the S3 client with provided credentials, region and custom endpoint.
@@ -77,7 +76,6 @@ func main() {
 		cancel()
 	}()
 
-	resetState := flag.Bool("reset-state", false, "Ignore and delete existing state.json")
 	flag.Parse()
 
 	logger.SetLevel(*logLevel)
@@ -115,14 +113,6 @@ func main() {
 		logger.Warn("Error opening log_json file: %v\n", err)
 	}
 	defer jsonLogFile.Close()
-
-	// Load state from state.json if exists
-	stateFileName := "state.json"
-
-	processed, err := state.LoadState(stateFileName, *resetState)
-	if err != nil {
-		logger.Warn("State load error: %v", err)
-	}
 
 	// Initialize S3 client with provided credentials and configurations
 	client, err := initS3Client(accessKey, secretKey, region, endpoint)
@@ -166,7 +156,7 @@ func main() {
 	var failedObjects []types.ObjectIdentifier
 
 	batchChan := make(chan []types.ObjectIdentifier, 10)
-	lister.StartProducer(ctx, client, bucket, processed, batchSize, batchChan, logger.Info, logger.Error, versioningEnabled)
+	lister.StartProducer(ctx, client, bucket, batchSize, batchChan, logger.Info, logger.Error, versioningEnabled)
 
 	// Use deleter package to start worker pool and process batches
 	delResult := deleter.StartWorkerPool(ctx, deleter.DeleterConfig{
@@ -175,7 +165,6 @@ func main() {
 		BatchSize:   batchSize,
 		EstimateETA: *estimateETA,
 		LogFile:     logFile,
-		Processed:   processed,
 		StateLock:   &mu,
 		Semaphore:   sem,
 		StartTime:   start,
@@ -202,11 +191,6 @@ func main() {
 		}
 		writer.Flush()
 		fmt.Printf("Wrote %d failed deletions to failures.csv\n", len(failedObjects))
-	}
-
-	// Save updated state to state.json
-	if err := state.SaveState(stateFileName, processed); err != nil {
-		logger.Warn("Failed to write state.json: %v", err)
 	}
 
 	// Print total time taken to complete the script
