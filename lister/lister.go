@@ -86,6 +86,45 @@ func StartProducer(
 			logInfo("📄 Page processed. Versions: %d, DeleteMarkers: %d", len(page.Versions), len(page.DeleteMarkers))
 		}
 
+		if totalCount == 0 {
+			logInfo("ℹ️ No versioned objects found, falling back to ListObjectsV2 paginator")
+			paginatorV2 := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+				Bucket: aws.String(bucket),
+			})
+
+			for paginatorV2.HasMorePages() {
+				ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
+				page, err := paginatorV2.NextPage(ctxPage)
+				cancel()
+				if err != nil {
+					logError("❌ Failed to retrieve page from ListObjectsV2: %v", err)
+					return
+				}
+
+				logInfo("S3 V2 page read completed: %d objects", len(page.Contents))
+				if len(page.Contents) == 0 {
+					logInfo("No objects returned in this page — the bucket may be empty or fully processed.")
+				}
+
+				for _, obj := range page.Contents {
+					key := aws.ToString(obj.Key)
+					logger.Debug("Checking object: %s", key)
+					logInfo("Queueing object: %s", key)
+					currentBatch = append(currentBatch, types.ObjectIdentifier{
+						Key: obj.Key,
+					})
+					totalCount++
+					if len(currentBatch) >= batchSize {
+						batchChan <- currentBatch
+						logInfo("🔄 Batch sent with %d objects", len(currentBatch))
+						currentBatch = nil
+					}
+				}
+
+				logInfo("📄 V2 Page processed. Objects: %d", len(page.Contents))
+			}
+		}
+
 		logInfo("✅ Completed listing. Total objects queued: %d", totalCount)
 
 		if len(currentBatch) > 0 {
