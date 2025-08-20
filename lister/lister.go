@@ -56,6 +56,7 @@ func StartProducer(
 				})
 				if len(currentBatch) >= batchSize {
 					batchChan <- currentBatch
+					logInfo("🔄 Batch sent with %d objects", len(currentBatch))
 					currentBatch = nil
 				}
 			}
@@ -72,6 +73,7 @@ func StartProducer(
 				})
 				if len(currentBatch) >= batchSize {
 					batchChan <- currentBatch
+					logInfo("🔄 Batch sent with %d objects", len(currentBatch))
 					currentBatch = nil
 				}
 			}
@@ -79,6 +81,7 @@ func StartProducer(
 
 		if len(currentBatch) > 0 {
 			batchChan <- currentBatch
+			logInfo("🔄 Final batch sent with %d objects", len(currentBatch))
 		}
 	}()
 }

@@ -52,6 +52,7 @@ func StartWorkerPool(
 		if len(batch) == 0 {
 			return
 		}
+		logger("🧺 Received batch with %d objects", len(batch))
 		wg.Add(1)
 		if err := cfg.Semaphore.Acquire(ctx, 1); err != nil {
 			warn("Semaphore acquire failed: %v", err)
