@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/nikosubra/emptybucket-portable/logger"
 )
 
 // StartProducer scans the bucket and sends delete batches over the provided channel.
@@ -47,7 +48,9 @@ func StartProducer(
 			for _, v := range page.Versions {
 				key := aws.ToString(v.Key)
 				ver := aws.ToString(v.VersionId)
+				logger.Debug("Checking object: %s", key)
 				if processed[key] != nil && processed[key][ver] {
+					logger.Debug("Already processed: %s", key)
 					continue
 				}
 				logInfo("Queueing object: %s version: %s", key, ver)
@@ -64,7 +67,9 @@ func StartProducer(
 			for _, dm := range page.DeleteMarkers {
 				key := aws.ToString(dm.Key)
 				ver := aws.ToString(dm.VersionId)
+				logger.Debug("Checking object: %s", key)
 				if processed[key] != nil && processed[key][ver] {
+					logger.Debug("Already processed: %s", key)
 					continue
 				}
 				logInfo("Queueing object: %s version: %s", key, ver)
