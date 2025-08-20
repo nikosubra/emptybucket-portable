@@ -23,6 +23,7 @@ func StartProducer(
 	versioningEnabled bool,
 ) {
 	go func() {
+		logInfo("🔍 StartProducer invoked for bucket: %s (versioning: %v)", bucket, versioningEnabled)
 		defer close(batchChan)
 
 		var totalCount int
@@ -31,12 +32,16 @@ func StartProducer(
 		paginator := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{
 			Bucket: aws.String(bucket),
 		})
+		if !paginator.HasMorePages() {
+			logInfo("⚠️  No pages available in paginator — bucket may be empty or inaccessible.")
+		}
 
 		for paginator.HasMorePages() {
 			ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
 			page, err := paginator.NextPage(ctxPage)
 			cancel()
 			if err != nil {
+				logError("❌ Failed to retrieve page: %v", err)
 				logError("Error listing objects: %v", err)
 				return
 			}
@@ -77,6 +82,8 @@ func StartProducer(
 					currentBatch = nil
 				}
 			}
+
+			logInfo("📄 Page processed. Versions: %d, DeleteMarkers: %d", len(page.Versions), len(page.DeleteMarkers))
 		}
 
 		logInfo("✅ Completed listing. Total objects queued: %d", totalCount)
