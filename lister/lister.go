@@ -32,6 +32,8 @@ func StartProducer(
 		paginator := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{
 			Bucket: aws.String(bucket),
 		})
+		logInfo("🧭 Created ListObjectVersions paginator")
+		logInfo("🔎 HasMorePages: %v", paginator.HasMorePages())
 		if !paginator.HasMorePages() {
 			logInfo("⚠️  No pages available in paginator — bucket may be empty or inaccessible.")
 		}
@@ -91,6 +93,8 @@ func StartProducer(
 			paginatorV2 := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 				Bucket: aws.String(bucket),
 			})
+			logInfo("🧭 Created ListObjectsV2 paginator")
+			logInfo("🔎 HasMorePages: %v", paginatorV2.HasMorePages())
 
 			for paginatorV2.HasMorePages() {
 				ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
