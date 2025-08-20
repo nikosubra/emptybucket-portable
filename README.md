@@ -51,6 +51,9 @@ You'll be prompted to input:
 | `--timeout`       | Global timeout (in hours) for the execution              |
 | `--workers`       | Number of concurrent deletion workers                    |
 | `--batch-size`    | Number of objects per delete batch                       |
+| `--dry-run`       | Simulates deletions without calling the S3 API           |
+| `--log-level`     | Set log level: `debug`, `info`, `warn`, `error`          |
+| `--estimate-eta`  | Enable approximate ETA logging based on batch rates      |
 
 Example:
 ```bash
@@ -68,10 +71,9 @@ Example:
 2. **State Loading**
    - Loads `state.json` (if exists) to skip previously deleted objects
 
-3. **Object Scanning**
-   - Scans versions and delete markers, skipping previously processed ones
-   - Pre-scan determines estimated total to provide accurate progress bar
-   - Displays a real-time progress bar in a single terminal line
+3. **Producer**
+   - Streams S3 object versions and delete markers directly into batches
+   - Skips previously processed versions via `state.json`
 
 4. **Batch Deletion**
    - Deletes in parallel using a producer–consumer model
@@ -80,11 +82,9 @@ Example:
    - Adaptive throttling slows down on repeated failures
 
 5. **Progress Tracking**
-   - Displays a live progress bar with ETA during:
-     - Scanning phase (with single-line visual update)
-     - Deletion phase (with single-line visual update)
-   - Logs are flushed immediately for real-time visibility
-   - Shows visual summary at completion
+   - Shows live counters (deleted and error counts) updated in real-time
+   - Logs flushed on every batch or signal
+   - Optional approximate ETA logging when enabled
 
 6. **State Saving**
    - Saves successfully deleted objects to `state.json`
@@ -119,7 +119,7 @@ Example:
 
 ## 📌 Future Improvements
 
-- [ ] `--dry-run` support
+- [x] `--dry-run` support
 - [ ] Prefix filtering (`--prefix`)
 - [x] Fully non-interactive mode (flags for credentials)
 - [ ] Prometheus or structured metrics export

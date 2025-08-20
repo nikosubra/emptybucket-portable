@@ -20,7 +20,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go/logging"
-	"github.com/schollz/progressbar/v3"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/nikosubra/emptybucket-portable/deleter"
@@ -156,54 +155,6 @@ func main() {
 		})
 	}
 
-	// Use an indeterminate progress bar for scanning (no pre-scan for estimated total).
-
-	// Scan and count total objects and versions in the bucket
-	var totalObjects int
-	countPaginator := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{
-		Bucket: aws.String(bucket),
-	})
-
-	scanBar := progressbar.NewOptions(-1,
-		progressbar.OptionSetDescription("Scanning bucket"),
-		progressbar.OptionSetPredictTime(true),
-		progressbar.OptionClearOnFinish(),
-		progressbar.OptionSetWidth(30),
-		progressbar.OptionSetRenderBlankState(true),
-	)
-
-	// Track scan start time
-	scanStart := time.Now()
-
-	for countPaginator.HasMorePages() {
-		ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
-		page, err := countPaginator.NextPage(ctxPage)
-		cancel()
-		if err != nil {
-			logger.Error("Error counting objects: %v\n", err)
-			log.Fatalf("Error counting objects: %v\n", err)
-		}
-		for _, v := range page.Versions {
-			key := aws.ToString(v.Key)
-			if processed[key] != nil && processed[key][aws.ToString(v.VersionId)] {
-				continue
-			}
-			totalObjects++
-			_ = scanBar.Add(1)
-		}
-		for _, dm := range page.DeleteMarkers {
-			key := aws.ToString(dm.Key)
-			if processed[key] != nil && processed[key][aws.ToString(dm.VersionId)] {
-				continue
-			}
-			totalObjects++
-			_ = scanBar.Add(1)
-		}
-	}
-	scanDuration := time.Since(scanStart)
-	fmt.Printf("Total objects: %d\n", totalObjects)
-	fmt.Printf("⏱️  Scanning completed in: %s\n", scanDuration.Truncate(time.Second))
-
 	// Settings for batch deletion with concurrency limited by semaphore
 	batchSize := *batch
 	numWorkers := *workers
@@ -276,7 +227,7 @@ func main() {
 		"deleted":        deletedCount,
 		"errors":         errorCount,
 		"failuresLogged": len(failedObjects),
-		"totalObjects":   totalObjects,
+		"totalObjects":   0,
 		"timestamp":      time.Now().Format(time.RFC3339),
 	}
 	metricsFile, err := os.Create("metrics.json")
