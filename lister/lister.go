@@ -23,35 +23,32 @@ func StartProducer(
 	versioningEnabled bool,
 ) {
 	go func() {
-		logInfo("🔍 StartProducer invoked for bucket: %s — using ListObjectsV2 only", bucket)
+		logInfo("🔍 StartProducer invoked for bucket: %s — using manual pagination with ListObjects (v1)", bucket)
 		defer close(batchChan)
 
 		var totalCount int
-
 		var currentBatch []types.ObjectIdentifier
-		paginatorV2 := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-			Bucket: aws.String(bucket),
-		})
-		logInfo("🧭 Created ListObjectsV2 paginator")
-		logInfo("🔎 HasMorePages: %v", paginatorV2.HasMorePages())
+		var marker *string
 
-		for paginatorV2.HasMorePages() {
-			logInfo("⏳ Calling paginator.NextPage for unversioned objects...")
+		for {
+			logInfo("⏳ Calling ListObjects with Marker: %v", marker)
 			ctxPage, cancel := context.WithTimeout(ctx, 120*time.Second)
-			page, err := paginatorV2.NextPage(ctxPage)
-			logInfo("✅ paginator.NextPage completed")
+			output, err := client.ListObjects(ctxPage, &s3.ListObjectsInput{
+				Bucket: aws.String(bucket),
+				Marker: marker,
+			})
 			cancel()
 			if err != nil {
-				logError("❌ Failed to retrieve page from ListObjectsV2: %v", err)
+				logError("❌ Failed to retrieve page from ListObjects: %v", err)
 				return
 			}
 
-			logInfo("S3 V2 page read completed: %d objects", len(page.Contents))
-			if len(page.Contents) == 0 {
+			logInfo("S3 V1 page read completed: %d objects", len(output.Contents))
+			if len(output.Contents) == 0 {
 				logInfo("No objects returned in this page — the bucket may be empty or fully processed.")
 			}
 
-			for _, obj := range page.Contents {
+			for _, obj := range output.Contents {
 				key := aws.ToString(obj.Key)
 				logger.Debug("Checking object: %s", key)
 				logInfo("Queueing object: %s", key)
@@ -66,7 +63,11 @@ func StartProducer(
 				}
 			}
 
-			logInfo("📄 V2 Page processed. Objects: %d", len(page.Contents))
+			if aws.ToBool(output.IsTruncated) == false {
+				break
+			}
+			marker = output.Contents[len(output.Contents)-1].Key
+			logInfo("📄 Page processed. Objects: %d, Next Marker: %s", len(output.Contents), aws.ToString(marker))
 		}
 
 		logInfo("✅ Completed listing. Total objects queued: %d", totalCount)
