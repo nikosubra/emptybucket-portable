@@ -39,6 +39,9 @@ func StartProducer(
 			}
 
 			logInfo("S3 page read completed: %d versions and %d delete markers", len(page.Versions), len(page.DeleteMarkers))
+			if len(page.Versions) == 0 && len(page.DeleteMarkers) == 0 {
+				logInfo("No objects returned in this page — the bucket may be empty or fully processed.")
+			}
 
 			for _, v := range page.Versions {
 				key := aws.ToString(v.Key)
@@ -46,6 +49,7 @@ func StartProducer(
 				if processed[key] != nil && processed[key][ver] {
 					continue
 				}
+				logInfo("Queueing object: %s version: %s", key, ver)
 				currentBatch = append(currentBatch, types.ObjectIdentifier{
 					Key: v.Key, VersionId: v.VersionId,
 				})
@@ -61,6 +65,7 @@ func StartProducer(
 				if processed[key] != nil && processed[key][ver] {
 					continue
 				}
+				logInfo("Queueing object: %s version: %s", key, ver)
 				currentBatch = append(currentBatch, types.ObjectIdentifier{
 					Key: dm.Key, VersionId: dm.VersionId,
 				})
