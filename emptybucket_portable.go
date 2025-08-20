@@ -217,7 +217,11 @@ func main() {
 	logger.Info("Total duration: %s", duration.Truncate(time.Second))
 	logger.Info("Failed deletions written to failures.csv: %d", len(failedObjects))
 
-	fmt.Println("\nℹ️  No objects found for deletion in the bucket.")
+	// Print summary only if no objects were processed
+	if deletedCount == 0 && errorCount == 0 {
+		logger.Info("No objects were found for deletion in the bucket.")
+		fmt.Println("\nℹ️  No objects found for deletion in the bucket.")
+	}
 	fmt.Printf("⏱️  Total duration: %s\n", duration.Truncate(time.Second))
 	fmt.Printf("✅ Deleted: %d\n", deletedCount)
 	fmt.Printf("❌ Errors: %d\n", errorCount)
