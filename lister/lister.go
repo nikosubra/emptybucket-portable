@@ -39,8 +39,10 @@ func StartProducer(
 		}
 
 		for paginator.HasMorePages() {
-			ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
+			logInfo("⏳ Calling paginator.NextPage for versioned objects...")
+			ctxPage, cancel := context.WithTimeout(ctx, 120*time.Second)
 			page, err := paginator.NextPage(ctxPage)
+			logInfo("✅ paginator.NextPage completed")
 			cancel()
 			if err != nil {
 				logError("❌ Failed to retrieve page: %v", err)
@@ -97,8 +99,10 @@ func StartProducer(
 			logInfo("🔎 HasMorePages: %v", paginatorV2.HasMorePages())
 
 			for paginatorV2.HasMorePages() {
-				ctxPage, cancel := context.WithTimeout(ctx, 60*time.Second)
+				logInfo("⏳ Calling paginator.NextPage for unversioned objects...")
+				ctxPage, cancel := context.WithTimeout(ctx, 120*time.Second)
 				page, err := paginatorV2.NextPage(ctxPage)
+				logInfo("✅ paginator.NextPage completed")
 				cancel()
 				if err != nil {
 					logError("❌ Failed to retrieve page from ListObjectsV2: %v", err)
