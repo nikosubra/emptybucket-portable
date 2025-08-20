@@ -25,6 +25,8 @@ func StartProducer(
 	go func() {
 		defer close(batchChan)
 
+		var totalCount int
+
 		var currentBatch []types.ObjectIdentifier
 		paginator := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{
 			Bucket: aws.String(bucket),
@@ -52,6 +54,7 @@ func StartProducer(
 				currentBatch = append(currentBatch, types.ObjectIdentifier{
 					Key: v.Key, VersionId: v.VersionId,
 				})
+				totalCount++
 				if len(currentBatch) >= batchSize {
 					batchChan <- currentBatch
 					logInfo("🔄 Batch sent with %d objects", len(currentBatch))
@@ -67,6 +70,7 @@ func StartProducer(
 				currentBatch = append(currentBatch, types.ObjectIdentifier{
 					Key: dm.Key, VersionId: dm.VersionId,
 				})
+				totalCount++
 				if len(currentBatch) >= batchSize {
 					batchChan <- currentBatch
 					logInfo("🔄 Batch sent with %d objects", len(currentBatch))
@@ -74,6 +78,8 @@ func StartProducer(
 				}
 			}
 		}
+
+		logInfo("✅ Completed listing. Total objects queued: %d", totalCount)
 
 		if len(currentBatch) > 0 {
 			batchChan <- currentBatch
