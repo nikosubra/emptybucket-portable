@@ -103,6 +103,13 @@ let evtSource;
 function connect() {
   evtSource = new EventSource("/events");
   evtSource.addEventListener("started", e => { const d = JSON.parse(e.data); setState("running", "running"); log("▶ " + d.message); });
+  evtSource.addEventListener("scanProgress", e => {
+    const s = JSON.parse(e.data).scan;
+    if (s && s.ShardsTotal > 0) {
+      const pct = (100 * s.ShardsDone / s.ShardsTotal).toFixed(0);
+      $("inv").innerHTML = `🔍 Scanning ${s.ShardsDone}/${s.ShardsTotal} shards (${pct}%) — ${fmtNum(s.KeysScanned)} keys observed`;
+    }
+  });
   evtSource.addEventListener("inventory", e => {
     const d = JSON.parse(e.data).inventory;
     $("s-total").textContent = fmtNum(d.TotalObjects);

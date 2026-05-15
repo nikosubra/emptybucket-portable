@@ -67,6 +67,8 @@ func main() {
 	sessionToken := flag.String("session-token", "", "Optional STS session token (for temporary credentials)")
 	retries := flag.Int("retries", 3, "Retry attempts per delete batch on transient errors")
 	prefix := flag.String("prefix", "", "Optional key prefix filter; only matching keys are deleted (e.g. 'logs/')")
+	scanConcurrency := flag.Int("scan-concurrency", 8, "Parallel workers for the inventory scan")
+	scanStrategy := flag.String("scan-strategy", "auto", "Scan strategy: auto | serial | delimiter | sharded")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
 
@@ -128,6 +130,8 @@ func main() {
 	req.SessionToken = *sessionToken
 	req.Retries = *retries
 	req.Prefix = *prefix
+	req.ScanConcurrency = *scanConcurrency
+	req.ScanStrategy = *scanStrategy
 
 	events := make(chan runner.Event, 256)
 	resultCh := make(chan runner.Result, 1)
@@ -211,11 +215,19 @@ func displayCLIProgress(events <-chan runner.Event) {
 			switch ev.Kind {
 			case runner.EventStarted:
 				fmt.Println("▶ " + ev.Message)
+			case runner.EventScanProgress:
+				if ev.Scan != nil {
+					sp := ev.Scan
+					if sp.ShardsTotal > 0 {
+						fmt.Printf("\r🔍 Scanning %d/%d shards | %s keys observed\033[K",
+							sp.ShardsDone, sp.ShardsTotal, formatInt(sp.KeysScanned))
+					}
+				}
 			case runner.EventInventory:
 				if ev.Inventory != nil {
 					iv := ev.Inventory
-					fmt.Printf("📦 Objects: %d | 📁 Top-level folders: %d | 💾 Size: %s\n",
-						iv.TotalObjects, iv.TopLevelFolders, runner.HumanBytes(iv.TotalSizeBytes))
+					fmt.Printf("\r\033[K📦 Objects: %d | 📁 Top-level folders: %d | 💾 Size: %s (scan %s)\n",
+						iv.TotalObjects, iv.TopLevelFolders, runner.HumanBytes(iv.TotalSizeBytes), iv.Elapsed.Truncate(time.Millisecond))
 					if iv.VersionedObjects > 0 {
 						fmt.Printf("🗂  Versions: %d | 🪦 Delete markers: %d\n", iv.VersionedObjects, iv.DeleteMarkers)
 					}
@@ -259,4 +271,20 @@ func durHuman(d time.Duration) string {
 		return "—"
 	}
 	return d.Truncate(time.Second).String()
+}
+
+func formatInt(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	// Lightweight thousands separator without importing message/format packages.
+	s := fmt.Sprintf("%d", n)
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }

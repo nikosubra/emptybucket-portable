@@ -41,9 +41,11 @@ type Request struct {
 	Workers      int    `json:"workers"`
 	BatchSize    int    `json:"batchSize"`
 	DryRun       bool   `json:"dryRun"`
-	Insecure     bool   `json:"insecure"` // skip TLS verification
-	Retries      int    `json:"retries"`  // delete-batch retry attempts; 0 = default (3)
-	Prefix       string `json:"prefix"`   // optional key prefix filter (e.g. "logs/")
+	Insecure         bool   `json:"insecure"`         // skip TLS verification
+	Retries          int    `json:"retries"`          // delete-batch retry attempts; 0 = default (3)
+	Prefix           string `json:"prefix"`           // optional key prefix filter (e.g. "logs/")
+	ScanConcurrency  int    `json:"scanConcurrency"`  // parallel scan workers; 0 = default (8)
+	ScanStrategy     string `json:"scanStrategy"`     // "auto" | "serial" | "delimiter" | "sharded"
 }
 
 // Validate normalizes and checks the request. Returns an error message
@@ -93,6 +95,17 @@ func (r *Request) Validate() error {
 	default:
 		return fmt.Errorf("engine must be one of: sdk, awscli, auto")
 	}
+	if r.ScanConcurrency <= 0 {
+		r.ScanConcurrency = 8
+	}
+	if r.ScanStrategy == "" {
+		r.ScanStrategy = "auto"
+	}
+	switch r.ScanStrategy {
+	case "auto", "serial", "delimiter", "sharded":
+	default:
+		return fmt.Errorf("scan-strategy must be one of: auto, serial, delimiter, sharded")
+	}
 	return nil
 }
 
@@ -100,22 +113,24 @@ func (r *Request) Validate() error {
 type EventKind string
 
 const (
-	EventStarted     EventKind = "started"
-	EventInventory   EventKind = "inventory"
-	EventDeletion    EventKind = "deletion"
-	EventStats       EventKind = "stats"
-	EventFinished    EventKind = "finished"
-	EventError       EventKind = "error"
+	EventStarted      EventKind = "started"
+	EventScanProgress EventKind = "scanProgress"
+	EventInventory    EventKind = "inventory"
+	EventDeletion     EventKind = "deletion"
+	EventStats        EventKind = "stats"
+	EventFinished     EventKind = "finished"
+	EventError        EventKind = "error"
 )
 
 // Event is the union payload emitted on the channel. Only fields relevant to
 // Kind are populated; consumers should switch on Kind.
 type Event struct {
-	Kind      EventKind            `json:"kind"`
-	Message   string               `json:"message,omitempty"`
-	Inventory *lister.Inventory    `json:"inventory,omitempty"`
+	Kind      EventKind              `json:"kind"`
+	Message   string                 `json:"message,omitempty"`
+	Inventory *lister.Inventory      `json:"inventory,omitempty"`
 	Deletion  *deleter.DeletionEvent `json:"deletion,omitempty"`
-	Stats     *Stats               `json:"stats,omitempty"`
+	Stats     *Stats                 `json:"stats,omitempty"`
+	Scan      *lister.ScanProgress   `json:"scan,omitempty"`
 }
 
 // Stats is a periodic snapshot used by UIs to update progress widgets.
@@ -216,8 +231,15 @@ func Run(ctx context.Context, req Request, events chan<- Event) Result {
 	versioned := verCfg != nil && verCfg.Status == "Enabled"
 
 	// Inventory.
-	send(Event{Kind: EventStarted, Message: "Scanning bucket inventory..."})
-	inv, err := lister.Scan(ctx, client, req.Bucket, req.Prefix, versioned)
+	send(Event{Kind: EventStarted, Message: fmt.Sprintf("Scanning bucket inventory (strategy=%s, concurrency=%d)...", req.ScanStrategy, req.ScanConcurrency)})
+	inv, err := lister.ParallelScan(ctx, client, req.Bucket, req.Prefix, versioned, lister.ScanOptions{
+		Concurrency: req.ScanConcurrency,
+		Strategy:    lister.ScanStrategy(req.ScanStrategy),
+		OnProgress: func(p lister.ScanProgress) {
+			snap := p
+			send(Event{Kind: EventScanProgress, Scan: &snap})
+		},
+	})
 	if err != nil {
 		send(Event{Kind: EventError, Message: "inventory: " + err.Error()})
 		// Continue without inventory — deletion still possible.

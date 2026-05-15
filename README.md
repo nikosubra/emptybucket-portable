@@ -117,6 +117,8 @@ Combine with flags for non-interactive defaults:
 | `--batch-size`     | `200`            | Objects per delete batch (clamped to S3 max of 1000)                   |
 | `--retries`        | `3`              | Retry attempts per delete batch on transient errors                    |
 | `--prefix`         | _empty_          | Restrict deletion to keys under this prefix (e.g. `logs/`)             |
+| `--scan-concurrency` | `8`            | Parallel workers for the inventory scan                                |
+| `--scan-strategy`  | `auto`           | `auto` \| `serial` \| `delimiter` \| `sharded`                         |
 | `--timeout`        | `36`             | Global execution timeout in hours                                      |
 | `--dry-run`        | `false`          | Simulate deletions; no objects removed                                 |
 | `--insecure`       | `false`          | Skip TLS certificate verification (self-signed endpoints only)         |
@@ -135,7 +137,7 @@ Example — fast cleanup with auto engine selection:
 
 ## 🧠 How It Works
 
-1. **Inventory scan** (`lister.Scan`) — one paginated pass with `ListObjectsV2` to compute total objects, top-level folders (unique first path segments), and total size. For versioned buckets, a second pass with `ListObjectVersions` counts versions and delete markers.
+1. **Inventory scan** (`lister.ParallelScan`) — a concurrent pass over the bucket. The default `--scan-strategy=auto` first runs a cheap `ListObjectsV2(Delimiter="/")` discovery: if it finds ≥4 top-level prefixes the scan parallelizes per folder; otherwise it falls back to 256 single-byte prefix shards. Either way, `--scan-concurrency` worker goroutines list pages in parallel. Versioned buckets list versions/markers in the same parallel fashion. Use `--scan-strategy=serial` to restore the legacy single-threaded scan.
 2. **Engine selection** — `auto` resolves to `awscli` when the binary is on `PATH`, otherwise `sdk`.
 3. **Listing** — `produceFlat` (`ListObjectsV2`) for unversioned buckets, `produceVersioned` (`ListObjectVersions`, including delete markers) for versioned buckets. Batches are streamed on a channel.
 4. **Deletion** —
@@ -187,6 +189,7 @@ Written under `--output-dir` (default: current directory). Pass `--output-dir=""
 - [x] Configurable retries, session-token, opt-in TLS skip
 - [x] Unit tests for request validation, artifact writing, throughput, inventory
 - [x] `--prefix` filtering
+- [x] Parallel inventory scan with auto strategy (delimiter / byte-shard / serial)
 - [ ] Resume from previous run state
 - [ ] Prometheus / OTEL metrics export
 - [ ] Adaptive worker scaling

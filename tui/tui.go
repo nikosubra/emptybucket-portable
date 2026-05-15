@@ -237,6 +237,15 @@ func (m Model) applyEvent(ev runner.Event) Model {
 	switch ev.Kind {
 	case runner.EventStarted:
 		m.appendLine("▶ " + ev.Message)
+	case runner.EventScanProgress:
+		if ev.Scan != nil && ev.Scan.ShardsTotal > 0 {
+			m.statusLines = append(m.statusLines, fmt.Sprintf("🔍 scanning %d/%d shards | %d keys",
+				ev.Scan.ShardsDone, ev.Scan.ShardsTotal, ev.Scan.KeysScanned))
+			// Cap to avoid spam (one line per progress event would flood).
+			if len(m.statusLines) > 200 {
+				m.statusLines = m.statusLines[len(m.statusLines)-200:]
+			}
+		}
 	case runner.EventInventory:
 		m.inv = &ev
 		if ev.Inventory != nil {
