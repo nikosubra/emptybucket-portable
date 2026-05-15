@@ -25,12 +25,13 @@ const (
 )
 
 type Model struct {
-	phase       phase
-	inputs      []textinput.Model
-	focusIndex  int
-	dryRun      bool
-	insecure    bool
-	engine      string
+	phase         phase
+	inputs        []textinput.Model
+	focusIndex    int
+	dryRun        bool
+	insecure      bool
+	skipInventory bool
+	engine        string
 	width       int
 	height      int
 	statusLines []string
@@ -139,7 +140,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	const totalRows = nFields + 3 // +engine, +dryRun, +insecure
+	const totalRows = nFields + 4 // +engine, +dryRun, +skipInventory, +insecure
 	switch msg.String() {
 	case "tab", "down":
 		m.focusIndex = (m.focusIndex + 1) % totalRows
@@ -157,10 +158,13 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.engine = "sdk"
 			}
 			return m, nil
-		case nFields + 1: // dry-run toggles
+		case nFields + 1:
 			m.dryRun = !m.dryRun
 			return m, nil
-		case nFields + 2: // insecure toggles
+		case nFields + 2:
+			m.skipInventory = !m.skipInventory
+			return m, nil
+		case nFields + 3:
 			m.insecure = !m.insecure
 			return m, nil
 		case nFields - 1: // last text field submits
@@ -171,11 +175,14 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+s":
 		return m.submit()
 	case " ":
-		if m.focusIndex == nFields+1 {
+		switch m.focusIndex {
+		case nFields + 1:
 			m.dryRun = !m.dryRun
 			return m, nil
-		}
-		if m.focusIndex == nFields+2 {
+		case nFields + 2:
+			m.skipInventory = !m.skipInventory
+			return m, nil
+		case nFields + 3:
 			m.insecure = !m.insecure
 			return m, nil
 		}
@@ -214,8 +221,9 @@ func (m Model) submit() (tea.Model, tea.Cmd) {
 		Engine:    m.engine,
 		Workers:   w,
 		BatchSize: b,
-		DryRun:    m.dryRun,
-		Insecure:  m.insecure,
+		DryRun:        m.dryRun,
+		Insecure:      m.insecure,
+		SkipInventory: m.skipInventory,
 	}
 	if req.Bucket == "" || req.Endpoint == "" || req.AccessKey == "" || req.SecretKey == "" {
 		m.errMsg = "All fields are required"
@@ -336,16 +344,26 @@ func (m Model) viewForm() string {
 		check = "[x]"
 	}
 	b.WriteString(dryPrefix + labelStyle.Render("Dry run: ") + check + muteStyle.Render(" (Space to toggle)\n\n"))
+	// Skip inventory row
+	skipPrefix := "  "
+	if m.focusIndex == nFields+2 {
+		skipPrefix = focusStyle.Render("▸ ")
+	}
+	skipCheck := "[ ]"
+	if m.skipInventory {
+		skipCheck = "[x]"
+	}
+	b.WriteString(skipPrefix + labelStyle.Render("Skip inventory: ") + skipCheck + muteStyle.Render(" (Space — faster start, no ETA)\n\n"))
 	// Insecure row
 	insPrefix := "  "
-	if m.focusIndex == nFields+2 {
+	if m.focusIndex == nFields+3 {
 		insPrefix = focusStyle.Render("▸ ")
 	}
 	insCheck := "[ ]"
 	if m.insecure {
 		insCheck = "[x]"
 	}
-	b.WriteString(insPrefix + labelStyle.Render("Skip TLS verify: ") + insCheck + muteStyle.Render(" (Space to toggle — self-signed only)\n\n"))
+	b.WriteString(insPrefix + labelStyle.Render("Skip TLS verify: ") + insCheck + muteStyle.Render(" (Space — self-signed only)\n\n"))
 	if m.errMsg != "" {
 		b.WriteString(errStyle.Render(m.errMsg) + "\n")
 	}

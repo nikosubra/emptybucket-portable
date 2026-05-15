@@ -57,6 +57,7 @@
     <label>Workers</label><input id="workers" type="number" value="4" min="1" max="64" />
     <label>Batch size</label><input id="batchSize" type="number" value="200" min="1" max="1000" />
     <label><input type="checkbox" id="dryRun" style="width:auto;margin-right:6px;" />Dry run</label>
+    <label><input type="checkbox" id="skipInventory" style="width:auto;margin-right:6px;" />Skip inventory scan (faster start, no ETA)</label>
     <label><input type="checkbox" id="insecure" style="width:auto;margin-right:6px;" />Skip TLS verification (self-signed endpoints)</label>
     <button id="go">Start</button>
   </section>
@@ -151,8 +152,9 @@ $("go").addEventListener("click", async () => {
     engine:    $("engine").value,
     workers:   parseInt($("workers").value, 10),
     batchSize: parseInt($("batchSize").value, 10),
-    dryRun:    $("dryRun").checked,
-    insecure:  $("insecure").checked,
+    dryRun:         $("dryRun").checked,
+    skipInventory:  $("skipInventory").checked,
+    insecure:       $("insecure").checked,
   };
   $("go").disabled = true;
   $("log").innerHTML = "";

@@ -119,6 +119,7 @@ Combine with flags for non-interactive defaults:
 | `--prefix`         | _empty_          | Restrict deletion to keys under this prefix (e.g. `logs/`)             |
 | `--scan-concurrency` | `8`            | Parallel workers for the inventory scan                                |
 | `--scan-strategy`  | `auto`           | `auto` \| `serial` \| `delimiter` \| `sharded`                         |
+| `--skip-inventory` | `false`          | Skip the inventory scan; deletion starts immediately (no ETA, no %)    |
 | `--timeout`        | `36`             | Global execution timeout in hours                                      |
 | `--dry-run`        | `false`          | Simulate deletions; no objects removed                                 |
 | `--insecure`       | `false`          | Skip TLS certificate verification (self-signed endpoints only)         |

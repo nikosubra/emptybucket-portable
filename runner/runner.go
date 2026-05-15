@@ -46,6 +46,7 @@ type Request struct {
 	Prefix           string `json:"prefix"`           // optional key prefix filter (e.g. "logs/")
 	ScanConcurrency  int    `json:"scanConcurrency"`  // parallel scan workers; 0 = default (8)
 	ScanStrategy     string `json:"scanStrategy"`     // "auto" | "serial" | "delimiter" | "sharded"
+	SkipInventory    bool   `json:"skipInventory"`    // start deletion immediately, no totals/ETA
 }
 
 // Validate normalizes and checks the request. Returns an error message
@@ -230,21 +231,27 @@ func Run(ctx context.Context, req Request, events chan<- Event) Result {
 	verCfg, _ := client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{Bucket: aws.String(req.Bucket)})
 	versioned := verCfg != nil && verCfg.Status == "Enabled"
 
-	// Inventory.
-	send(Event{Kind: EventStarted, Message: fmt.Sprintf("Scanning bucket inventory (strategy=%s, concurrency=%d)...", req.ScanStrategy, req.ScanConcurrency)})
-	inv, err := lister.ParallelScan(ctx, client, req.Bucket, req.Prefix, versioned, lister.ScanOptions{
-		Concurrency: req.ScanConcurrency,
-		Strategy:    lister.ScanStrategy(req.ScanStrategy),
-		OnProgress: func(p lister.ScanProgress) {
-			snap := p
-			send(Event{Kind: EventScanProgress, Scan: &snap})
-		},
-	})
-	if err != nil {
-		send(Event{Kind: EventError, Message: "inventory: " + err.Error()})
-		// Continue without inventory — deletion still possible.
+	// Inventory (optional).
+	var inv *lister.Inventory
+	if req.SkipInventory {
+		send(Event{Kind: EventStarted, Message: "Skipping inventory scan (--skip-inventory); ETA and totals will be unavailable."})
 	} else {
-		send(Event{Kind: EventInventory, Inventory: inv})
+		send(Event{Kind: EventStarted, Message: fmt.Sprintf("Scanning bucket inventory (strategy=%s, concurrency=%d)...", req.ScanStrategy, req.ScanConcurrency)})
+		scanned, scanErr := lister.ParallelScan(ctx, client, req.Bucket, req.Prefix, versioned, lister.ScanOptions{
+			Concurrency: req.ScanConcurrency,
+			Strategy:    lister.ScanStrategy(req.ScanStrategy),
+			OnProgress: func(p lister.ScanProgress) {
+				snap := p
+				send(Event{Kind: EventScanProgress, Scan: &snap})
+			},
+		})
+		if scanErr != nil {
+			send(Event{Kind: EventError, Message: "inventory: " + scanErr.Error()})
+			// Continue without inventory — deletion still possible.
+		} else {
+			inv = scanned
+			send(Event{Kind: EventInventory, Inventory: inv})
+		}
 	}
 
 	if inv != nil {

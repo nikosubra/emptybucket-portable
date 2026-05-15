@@ -69,6 +69,7 @@ func main() {
 	prefix := flag.String("prefix", "", "Optional key prefix filter; only matching keys are deleted (e.g. 'logs/')")
 	scanConcurrency := flag.Int("scan-concurrency", 8, "Parallel workers for the inventory scan")
 	scanStrategy := flag.String("scan-strategy", "auto", "Scan strategy: auto | serial | delimiter | sharded")
+	skipInventory := flag.Bool("skip-inventory", false, "Skip the inventory scan; start deletion immediately (no ETA, no progress %)")
 	showVersion := flag.Bool("version", false, "Print version information and exit")
 	flag.Parse()
 
@@ -132,6 +133,7 @@ func main() {
 	req.Prefix = *prefix
 	req.ScanConcurrency = *scanConcurrency
 	req.ScanStrategy = *scanStrategy
+	req.SkipInventory = *skipInventory
 
 	events := make(chan runner.Event, 256)
 	resultCh := make(chan runner.Result, 1)
