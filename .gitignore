@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+/emptybucket-portable
+/emptybucket
+*.exe
+
+# Runtime output files
+output.log
+log_json.json
+failures.csv
+state.json
+metrics.json
+
+# Editor
+.vscode/
+.idea/

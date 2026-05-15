@@ -1,233 +1,262 @@
+// emptybucket_portable is the CLI entrypoint. It dispatches to one of three
+// user interfaces (cli, tui, web) and, for the cli case, drives the shared
+// runner orchestrator and prints a live progress line.
 package main
 
 import (
 	"context"
-	"crypto/tls"
-	"encoding/csv"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
+	"runtime/debug"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/aws/smithy-go/logging"
-	"golang.org/x/sync/semaphore"
-
-	"github.com/nikosubra/emptybucket-portable/deleter"
-	"github.com/nikosubra/emptybucket-portable/lister"
 	"github.com/nikosubra/emptybucket-portable/logger"
+	"github.com/nikosubra/emptybucket-portable/runner"
+	"github.com/nikosubra/emptybucket-portable/tui"
+	"github.com/nikosubra/emptybucket-portable/webui"
 )
 
-// Initialize the S3 client with provided credentials, region and custom endpoint.
-// Disable TLS verification to allow connections to endpoints with invalid certificates.
-func initS3Client(accessKey, secretKey, region, endpoint string) (*s3.Client, error) {
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(region),
-		config.WithCredentialsProvider(
-			aws.NewCredentialsCache(
-				credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
-			),
-		),
-		config.WithEndpointResolver(
-			aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
-				return aws.Endpoint{URL: endpoint, HostnameImmutable: true}, nil
-			}),
-		),
-		config.WithHTTPClient(&http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}),
-		config.WithLogger(logging.NewStandardLogger(os.Stderr)),
-	)
-	if err != nil {
-		return nil, err
+// versionString returns a single-line build identifier. When the binary is
+// built from a clean git checkout `go build` embeds VCS info via
+// runtime/debug.ReadBuildInfo; otherwise we fall back to a generic marker.
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "emptybucket-portable (unknown build)"
 	}
-	return s3.NewFromConfig(cfg), nil
+	var rev, dirty, when, goVer string
+	goVer = info.GoVersion
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+			if len(rev) > 12 {
+				rev = rev[:12]
+			}
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		case "vcs.time":
+			when = s.Value
+		}
+	}
+	if rev == "" {
+		rev = "devel"
+	}
+	return fmt.Sprintf("emptybucket-portable %s%s (built %s, %s)", rev, dirty, when, goVer)
 }
 
 func main() {
-
 	timeoutHours := flag.Int("timeout", 36, "Global timeout for execution in hours")
 	workers := flag.Int("workers", 4, "Number of concurrent deletion workers")
-	batch := flag.Int("batch-size", 200, "Number of objects to delete per batch")
-	estimateETA := flag.Bool("estimate-eta", false, "Enable approximate ETA based on batch processing rate")
+	batch := flag.Int("batch-size", 200, "Number of objects per delete batch (max 1000)")
 	dryRun := flag.Bool("dry-run", false, "Simulate deletions without actually deleting objects")
 	logLevel := flag.String("log-level", "info", "Set log level: debug, info, warn, error")
+	engine := flag.String("engine", "sdk", "Deletion engine: sdk | awscli | auto")
+	uiMode := flag.String("ui", "cli", "User interface: cli | tui | web")
+	webAddr := flag.String("web-addr", "127.0.0.1:8765", "Bind address for --ui=web")
+	insecure := flag.Bool("insecure", false, "Skip TLS certificate verification (use only for self-signed local endpoints)")
+	outDir := flag.String("output-dir", ".", "Directory where failures.csv and metrics.json are written; empty disables artifact writing")
+	sessionToken := flag.String("session-token", "", "Optional STS session token (for temporary credentials)")
+	retries := flag.Int("retries", 3, "Retry attempts per delete batch on transient errors")
+	prefix := flag.String("prefix", "", "Optional key prefix filter; only matching keys are deleted (e.g. 'logs/')")
+	showVersion := flag.Bool("version", false, "Print version information and exit")
+	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(versionString())
+		return
+	}
+
+	switch *uiMode {
+	case "tui":
+		if err := tui.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "web":
+		ctxWeb, cancelWeb := context.WithCancel(context.Background())
+		defer cancelWeb()
+		sigsWeb := make(chan os.Signal, 1)
+		signal.Notify(sigsWeb, os.Interrupt, syscall.SIGTERM)
+		go func() { <-sigsWeb; cancelWeb() }()
+		fmt.Printf("Web UI listening on http://%s\n", *webAddr)
+		srv := webui.New()
+		if err := srv.Serve(ctxWeb, *webAddr); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "web UI error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// CLI mode.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeoutHours)*time.Hour)
 	defer cancel()
-
-	// Handle interrupt signals to gracefully shut down
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-sigs
-		logger.Warn("Interrupt signal received. Cancelling context...")
+		s := <-sigs
+		fmt.Fprintf(os.Stderr, "\n%s received, cancelling...\n", s)
 		cancel()
 	}()
 
-	flag.Parse()
-
 	logger.SetLevel(*logLevel)
 
-	// Initial message and store start time of execution
-	fmt.Println("Starting bucket cleanup script...")
-	start := time.Now()
-
-	// Collect user input: AWS credentials, bucket, endpoint and region
-	var accessKey, secretKey, bucket, endpoint, region string
-	fmt.Print("Enter AWS Access Key: ")
-	fmt.Scanln(&accessKey)
-	fmt.Print("Enter AWS Secret Key: ")
-	fmt.Scanln(&secretKey)
-	fmt.Print("Enter Bucket name: ")
-	fmt.Scanln(&bucket)
-	fmt.Print("Enter S3 Endpoint: ")
-	fmt.Scanln(&endpoint)
-	fmt.Print("Enter Region: ")
-	fmt.Scanln(&region)
-
-	// Setup logging: create log file and write error logs only to file
-	logFile, err := os.Create("output.log")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening log file: %v\n", err)
-		os.Exit(1)
-	}
-	defer logFile.Close()
-
-	logger.Init(logFile)
-
-	// Create JSON log file with error handling for opening
-	jsonLogFile, err := os.Create("log_json.json")
-	if err != nil {
-		logger.Warn("Error opening log_json file: %v\n", err)
-	}
-	defer jsonLogFile.Close()
-
-	// Initialize S3 client with provided credentials and configurations
-	client, err := initS3Client(accessKey, secretKey, region, endpoint)
-	if err != nil {
-		logger.Error("Config error: %v\n", err)
-		log.Fatalf("Config error: %v\n", err)
-	}
-
-	// Check accessibility of the specified bucket via HeadBucket
-	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: aws.String(bucket),
-	})
-	if err != nil {
-		logger.Error("Bucket not accessible: %v\n", err)
-		log.Fatalf("Bucket not accessible: %v\n", err)
-	}
-
-	// Retrieve and log bucket versioning status in JSON format
-	verCfg, err := client.GetBucketVersioning(context.TODO(), &s3.GetBucketVersioningInput{
-		Bucket: aws.String(bucket),
-	})
-	versioningEnabled := verCfg.Status == "Enabled"
-	if err == nil {
-		json.NewEncoder(jsonLogFile).Encode(map[string]interface{}{
-			"time":             time.Now().Format(time.RFC3339),
-			"bucket":           bucket,
-			"region":           region,
-			"endpoint":         endpoint,
-			"versioningStatus": string(verCfg.Status),
-			"mfaDelete":        string(verCfg.MFADelete),
-		})
-	}
-
-	// Settings for batch deletion with concurrency limited by semaphore
-	batchSize := *batch
-	numWorkers := *workers
-	sem := semaphore.NewWeighted(int64(numWorkers))
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	var failedObjects []types.ObjectIdentifier
-
-	batchChan := make(chan []types.ObjectIdentifier, 10)
-	lister.StartProducer(ctx, client, bucket, batchSize, batchChan, logger.Info, logger.Error, versioningEnabled)
-
-	// Use deleter package to start worker pool and process batches
-	delResult := deleter.StartWorkerPool(ctx, deleter.DeleterConfig{
-		Client:      client,
-		Bucket:      bucket,
-		BatchSize:   batchSize,
-		EstimateETA: *estimateETA,
-		LogFile:     logFile,
-		StateLock:   &mu,
-		Semaphore:   sem,
-		StartTime:   start,
-		DryRun:      *dryRun,
-	}, batchChan, &wg, logger.Info, logger.Warn, logger.Error)
-
-	deletedCount := delResult.DeletedCount
-	errorCount := delResult.ErrorCount
-	failedObjects = delResult.FailedObjects
-
-	logger.Info("All deletion workers completed.")
-
-	// Print final summary of deletion operations
-	fmt.Printf("\nDeleted: %d | Errors: %d\n", deletedCount, errorCount)
-
-	// Write to CSV file the objects that were not successfully deleted
-	if len(failedObjects) > 0 {
-		fcsv, _ := os.Create("failures.csv")
-		writer := csv.NewWriter(fcsv)
-		defer fcsv.Close()
-		writer.Write([]string{"Key", "VersionId"})
-		for _, obj := range failedObjects {
-			writer.Write([]string{aws.ToString(obj.Key), aws.ToString(obj.VersionId)})
+	// Open log files in the output dir (or skip if empty).
+	if *outDir != "" {
+		if err := os.MkdirAll(*outDir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "cannot create output dir: %v\n", err)
+			os.Exit(1)
 		}
-		writer.Flush()
-		fmt.Printf("Wrote %d failed deletions to failures.csv\n", len(failedObjects))
-	}
-
-	// Print total time taken to complete the script
-	duration := time.Since(start)
-	fmt.Printf("Completed in: %v\n", duration)
-
-	logger.Info("Final summary: Deleted %d objects, Encountered %d errors", deletedCount, errorCount)
-	logger.Info("Total duration: %s", duration.Truncate(time.Second))
-	logger.Info("Failed deletions written to failures.csv: %d", len(failedObjects))
-
-	// Print summary only if no objects were processed
-	if deletedCount == 0 && errorCount == 0 {
-		logger.Info("No objects were found for deletion in the bucket.")
-		fmt.Println("\nℹ️  No objects found for deletion in the bucket.")
-	}
-	fmt.Printf("⏱️  Total duration: %s\n", duration.Truncate(time.Second))
-	fmt.Printf("✅ Deleted: %d\n", deletedCount)
-	fmt.Printf("❌ Errors: %d\n", errorCount)
-	fmt.Printf("📄 Failures logged in: failures.csv\n")
-
-	metrics := map[string]interface{}{
-		"duration":       duration.Truncate(time.Second).String(),
-		"deleted":        deletedCount,
-		"errors":         errorCount,
-		"failuresLogged": len(failedObjects),
-		"totalObjects":   0,
-		"timestamp":      time.Now().Format(time.RFC3339),
-	}
-	metricsFile, err := os.Create("metrics.json")
-	if err != nil {
-		logger.Warn("Failed to create metrics.json: %v", err)
-	} else {
-		encoder := json.NewEncoder(metricsFile)
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(metrics); err != nil {
-			logger.Warn("Failed to write metrics.json: %v", err)
+		logFile, err := os.Create(*outDir + "/output.log")
+		if err == nil {
+			defer logFile.Close()
+			logger.Init(logFile)
 		}
-		metricsFile.Close()
 	}
+
+	fmt.Println("emptybucket — bucket cleanup")
+	req := promptForRequest(*engine, *workers, *batch, *dryRun, *insecure)
+	req.SessionToken = *sessionToken
+	req.Retries = *retries
+	req.Prefix = *prefix
+
+	events := make(chan runner.Event, 256)
+	resultCh := make(chan runner.Result, 1)
+	go func() {
+		resultCh <- runner.Run(ctx, req, events)
+	}()
+
+	displayCLIProgress(events)
+
+	res := <-resultCh
+	printCLISummary(res)
+	if *outDir != "" {
+		if err := runner.WriteArtifacts(*outDir, req, res); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write artifacts: %v\n", err)
+		} else if len(res.FailedKeys) > 0 {
+			fmt.Printf("📄 Failures written to %s/failures.csv\n", *outDir)
+		}
+	}
+	if res.Errors > 0 {
+		os.Exit(2)
+	}
+}
+
+// promptForRequest reads connection settings from stdin and returns a runner
+// Request seeded with CLI-flag defaults.
+func promptForRequest(engine string, workers, batch int, dryRun, insecure bool) runner.Request {
+	read := func(label string) string {
+		fmt.Print(label + ": ")
+		var v string
+		fmt.Scanln(&v)
+		return strings.TrimSpace(v)
+	}
+	return runner.Request{
+		AccessKey: read("Enter AWS Access Key"),
+		SecretKey: read("Enter AWS Secret Key"),
+		Bucket:    read("Enter Bucket name"),
+		Endpoint:  read("Enter S3 Endpoint"),
+		Region:    read("Enter Region (default us-east-1)"),
+		Engine:    engine,
+		Workers:   workers,
+		BatchSize: batch,
+		DryRun:    dryRun,
+		Insecure:  insecure,
+	}
+}
+
+// displayCLIProgress consumes events from the runner and renders a single
+// self-updating progress line. Returns when the events channel closes.
+func displayCLIProgress(events <-chan runner.Event) {
+	var latest atomic.Value
+	latest.Store("")
+	var lastStats runner.Stats
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	render := func() {
+		k, _ := latest.Load().(string)
+		if len(k) > 60 {
+			k = "..." + k[len(k)-57:]
+		}
+		if lastStats.Total > 0 {
+			pct := float64(lastStats.Deleted) / float64(lastStats.Total) * 100
+			fmt.Printf("\r✅ %d/%d (%.1f%%) | %.1f/s | ETA %s | %s\033[K",
+				lastStats.Deleted, lastStats.Total, pct,
+				lastStats.ObjectsPerSec, durHuman(lastStats.ETA), k)
+		} else {
+			fmt.Printf("\r✅ %d | %.1f/s | %s\033[K", lastStats.Deleted, lastStats.ObjectsPerSec, k)
+		}
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			render()
+		case ev, ok := <-events:
+			if !ok {
+				render()
+				fmt.Println()
+				return
+			}
+			switch ev.Kind {
+			case runner.EventStarted:
+				fmt.Println("▶ " + ev.Message)
+			case runner.EventInventory:
+				if ev.Inventory != nil {
+					iv := ev.Inventory
+					fmt.Printf("📦 Objects: %d | 📁 Top-level folders: %d | 💾 Size: %s\n",
+						iv.TotalObjects, iv.TopLevelFolders, runner.HumanBytes(iv.TotalSizeBytes))
+					if iv.VersionedObjects > 0 {
+						fmt.Printf("🗂  Versions: %d | 🪦 Delete markers: %d\n", iv.VersionedObjects, iv.DeleteMarkers)
+					}
+				}
+			case runner.EventDeletion:
+				if ev.Deletion != nil {
+					latest.Store(ev.Deletion.Key)
+				}
+			case runner.EventStats:
+				if ev.Stats != nil {
+					lastStats = *ev.Stats
+				}
+			case runner.EventError:
+				fmt.Println()
+				fmt.Fprintln(os.Stderr, "✗ "+ev.Message)
+			case runner.EventFinished:
+				if ev.Stats != nil {
+					lastStats = *ev.Stats
+				}
+			}
+		}
+	}
+}
+
+func printCLISummary(res runner.Result) {
+	fmt.Printf("⏱  Duration: %s\n", res.Duration.Truncate(time.Second))
+	fmt.Printf("✅ Deleted: %d\n", res.Deleted)
+	if res.Errors > 0 {
+		fmt.Printf("❌ Errors: %d\n", res.Errors)
+	}
+	if res.Inventory != nil && res.Deleted == 0 && res.Errors == 0 {
+		if (res.Versioned && res.Inventory.VersionedObjects+res.Inventory.DeleteMarkers == 0) ||
+			(!res.Versioned && res.Inventory.TotalObjects == 0) {
+			fmt.Println("ℹ️  Bucket was already empty.")
+		}
+	}
+}
+
+func durHuman(d time.Duration) string {
+	if d <= 0 {
+		return "—"
+	}
+	return d.Truncate(time.Second).String()
 }

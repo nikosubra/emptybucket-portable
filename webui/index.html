@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>emptybucket — S3 Bucket Cleaner</title>
+<style>
+  :root { --bg:#0f1115; --panel:#181b22; --fg:#e6e6e6; --mute:#8a8f99; --accent:#4ea1ff; --ok:#3fb950; --err:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:16px 24px; border-bottom:1px solid #262a33; display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  main { display:grid; grid-template-columns: 360px 1fr; gap:0; height:calc(100vh - 53px); }
+  #form-panel { padding:20px; border-right:1px solid #262a33; overflow-y:auto; background:var(--panel); }
+  #form-panel label { display:block; font-size:12px; color:var(--mute); margin:10px 0 4px; }
+  #form-panel input, #form-panel select { width:100%; background:#0f1115; color:var(--fg); border:1px solid #262a33; border-radius:6px; padding:8px 10px; font-size:13px; }
+  #form-panel button { width:100%; margin-top:16px; padding:10px; border:0; border-radius:6px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  #form-panel button:disabled { opacity:.5; cursor:not-allowed; }
+  #status-panel { padding:20px; overflow-y:auto; }
+  .stats { display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:16px; }
+  .stat { background:var(--panel); border:1px solid #262a33; border-radius:8px; padding:12px; }
+  .stat .k { font-size:11px; color:var(--mute); text-transform:uppercase; letter-spacing:.05em; }
+  .stat .v { font-size:22px; font-weight:600; margin-top:4px; font-variant-numeric: tabular-nums; }
+  .progress { background:#262a33; border-radius:8px; overflow:hidden; height:12px; margin:12px 0; }
+  .progress > div { background:var(--accent); height:100%; width:0%; transition:width .25s linear; }
+  .inv { background:var(--panel); border:1px solid #262a33; border-radius:8px; padding:12px; margin-bottom:16px; font-size:13px; color:var(--mute); }
+  .inv strong { color:var(--fg); }
+  #log { background:#0a0c10; border:1px solid #262a33; border-radius:8px; padding:8px; font-family: ui-monospace, Menlo, monospace; font-size:12px; height:300px; overflow-y:auto; }
+  #log .line { padding:2px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #log .err { color:var(--err); }
+  #log .ok { color:var(--ok); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .pill.idle { background:#262a33; color:var(--mute); }
+  .pill.running { background:#1f3a5f; color:var(--accent); }
+  .pill.done { background:#163d22; color:var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>emptybucket</h1>
+  <span id="state" class="pill idle">idle</span>
+</header>
+<main>
+  <section id="form-panel">
+    <label>Endpoint</label><input id="endpoint" placeholder="https://s3.example.com" />
+    <label>Region</label><input id="region" placeholder="us-east-1" value="us-east-1" />
+    <label>Bucket</label><input id="bucket" placeholder="my-bucket" />
+    <label>Prefix (optional)</label><input id="prefix" placeholder="logs/" />
+    <label>Access Key</label><input id="accessKey" autocomplete="off" />
+    <label>Secret Key</label><input id="secretKey" type="password" autocomplete="off" />
+    <label>Session Token (optional)</label><input id="sessionToken" type="password" autocomplete="off" />
+    <label>Engine</label>
+    <select id="engine">
+      <option value="sdk">SDK (Go)</option>
+      <option value="awscli">AWS CLI</option>
+      <option value="auto">Auto</option>
+    </select>
+    <label>Workers</label><input id="workers" type="number" value="4" min="1" max="64" />
+    <label>Batch size</label><input id="batchSize" type="number" value="200" min="1" max="1000" />
+    <label><input type="checkbox" id="dryRun" style="width:auto;margin-right:6px;" />Dry run</label>
+    <label><input type="checkbox" id="insecure" style="width:auto;margin-right:6px;" />Skip TLS verification (self-signed endpoints)</label>
+    <button id="go">Start</button>
+  </section>
+  <section id="status-panel">
+    <div class="stats">
+      <div class="stat"><div class="k">Deleted</div><div class="v" id="s-deleted">0</div></div>
+      <div class="stat"><div class="k">Total</div><div class="v" id="s-total">—</div></div>
+      <div class="stat"><div class="k">Throughput</div><div class="v" id="s-rate">0/s</div></div>
+      <div class="stat"><div class="k">ETA</div><div class="v" id="s-eta">—</div></div>
+    </div>
+    <div class="progress"><div id="bar"></div></div>
+    <div class="inv" id="inv">Inventory: not yet scanned.</div>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const setState = (txt, cls) => { const el = $("state"); el.textContent = txt; el.className = "pill " + cls; };
+const fmtNum = n => n == null ? "—" : n.toLocaleString();
+const fmtBytes = n => {
+  if (n == null) return "—";
+  const u = ["B","KiB","MiB","GiB","TiB","PiB"]; let i = 0;
+  while (n >= 1024 && i < u.length-1) { n /= 1024; i++; }
+  return n.toFixed(2) + " " + u[i];
+};
+const fmtNs = ns => {
+  if (!ns) return "—";
+  let s = Math.floor(ns / 1e9);
+  const h = Math.floor(s/3600); s %= 3600;
+  const m = Math.floor(s/60); s %= 60;
+  return (h?h+"h ":"") + (m?m+"m ":"") + s + "s";
+};
+const log = (msg, cls) => {
+  const el = $("log");
+  const div = document.createElement("div");
+  div.className = "line " + (cls||"");
+  div.textContent = msg;
+  el.appendChild(div);
+  while (el.children.length > 500) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+};
+
+let evtSource;
+function connect() {
+  evtSource = new EventSource("/events");
+  evtSource.addEventListener("started", e => { const d = JSON.parse(e.data); setState("running", "running"); log("▶ " + d.message); });
+  evtSource.addEventListener("inventory", e => {
+    const d = JSON.parse(e.data).inventory;
+    $("s-total").textContent = fmtNum(d.TotalObjects);
+    $("inv").innerHTML = `📦 Objects: <strong>${fmtNum(d.TotalObjects)}</strong> | 📁 Top-level folders: <strong>${fmtNum(d.TopLevelFolders)}</strong> | 💾 Size: <strong>${fmtBytes(d.TotalSizeBytes)}</strong>${d.VersionedObjects ? ` | 🗂 Versions: <strong>${fmtNum(d.VersionedObjects)}</strong> | 🪦 Delete markers: <strong>${fmtNum(d.DeleteMarkers)}</strong>` : ""}`;
+  });
+  evtSource.addEventListener("deletion", e => {
+    const d = JSON.parse(e.data).deletion;
+    log((d.Failed ? "✗ " : "✓ ") + d.Key + (d.VersionId ? " @" + d.VersionId.slice(0,8) : ""), d.Failed ? "err" : "ok");
+  });
+  evtSource.addEventListener("stats", e => {
+    const s = JSON.parse(e.data).stats;
+    $("s-deleted").textContent = fmtNum(s.deleted);
+    if (s.total) $("s-total").textContent = fmtNum(s.total);
+    $("s-rate").textContent = (s.objectsPerSec || 0).toFixed(1) + "/s";
+    $("s-eta").textContent = fmtNs(s.etaNs);
+    if (s.total > 0) $("bar").style.width = (100 * s.deleted / s.total) + "%";
+  });
+  evtSource.addEventListener("finished", e => {
+    const s = JSON.parse(e.data).stats;
+    setState("done", "done");
+    log(`✅ Finished — deleted ${s.deleted}, errors ${s.errors}, duration ${fmtNs(s.elapsedNs)}`, "ok");
+    $("go").disabled = false;
+  });
+  evtSource.addEventListener("error", e => {
+    if (e.data) { const d = JSON.parse(e.data); log("✗ " + d.message, "err"); }
+  });
+}
+connect();
+
+$("go").addEventListener("click", async () => {
+  const body = {
+    accessKey:    $("accessKey").value.trim(),
+    secretKey:    $("secretKey").value.trim(),
+    sessionToken: $("sessionToken").value.trim(),
+    bucket:    $("bucket").value.trim(),
+    prefix:    $("prefix").value.trim(),
+    endpoint:  $("endpoint").value.trim(),
+    region:    $("region").value.trim(),
+    engine:    $("engine").value,
+    workers:   parseInt($("workers").value, 10),
+    batchSize: parseInt($("batchSize").value, 10),
+    dryRun:    $("dryRun").checked,
+    insecure:  $("insecure").checked,
+  };
+  $("go").disabled = true;
+  $("log").innerHTML = "";
+  $("bar").style.width = "0%";
+  $("s-deleted").textContent = "0";
+  const r = await fetch("/start", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  if (!r.ok) {
+    log("✗ " + await r.text(), "err");
+    $("go").disabled = false;
+  }
+});
+</script>
+</body>
+</html>
